@@ -332,7 +332,7 @@ void SX1272_LoRaRadio::set_operation_mode(uint8_t mode)
  * At initialization FSK is chosen. Later stack or application
  * can choose to change.
  */
-void SX1272_LoRaRadio::set_modem(uint8_t modem)
+void SX1272_LoRaRadio::set_modem(uint8_t modem )
 {
     if ((read_register(REG_OPMODE) & RFLR_OPMODE_LONGRANGEMODE_ON) != 0 ) {
         _rf_settings.modem = MODEM_LORA;
@@ -703,6 +703,76 @@ uint32_t SX1272_LoRaRadio::time_on_air(radio_modems_t modem, uint8_t pkt_len)
     }
     return airtime;
 }
+
+
+/**
+ * Calculates various time-on-air components: packet time, symbol time, and preamble time.
+ *
+ * Crucial for the stack in order to calculate dwell time so as to control
+ * duty cycling.
+ */
+uint32_t SX1272_LoRaRadio::time_on_air_comprehensive(radio_modems_t modem, uint8_t pkt_len, 
+                            float &symbol_duration, float &preamble_duration)
+{
+    uint32_t airtime = 0;
+
+    switch (modem) {
+        case MODEM_FSK: {
+            airtime = rint((8 * (_rf_settings.fsk.preamble_len
+                                    + ((read_register( REG_SYNCCONFIG)
+                                            & ~RF_SYNCCONFIG_SYNCSIZE_MASK) + 1)
+                                    + ((_rf_settings.fsk.fix_len == 0x01) ?
+                                            0.0f : 1.0f)
+                                    + (((read_register( REG_PACKETCONFIG1)
+                                            & ~RF_PACKETCONFIG1_ADDRSFILTERING_MASK)
+                                            != 0x00) ? 1.0f : 0) + pkt_len
+                                    + ((_rf_settings.fsk.crc_on == 0x01) ?
+                                            2.0f : 0))
+                            / _rf_settings.fsk.datarate) * 1000);
+        }
+            break;
+        case MODEM_LORA: {
+            float bw = 0.0f;
+            switch (_rf_settings.lora.bandwidth) {
+                case 0: // 125 kHz
+                    bw = 125000;
+                    break;
+                case 1: // 250 kHz
+                    bw = 250000;
+                    break;
+                case 2: // 500 kHz
+                    bw = 500000;
+                    break;
+            }
+
+            // Symbol rate : time for one symbol (secs)
+            float rs = bw / (1 << _rf_settings.lora.datarate);
+            float ts = 1 / rs;
+            symbol_duration = ts;
+            // time of preamble
+            float preamble_time = (_rf_settings.lora.preamble_len + 4.25f) * ts;
+            preamble_duration = preamble_time;
+
+            // Symbol length of payload and time
+            float tmp = ceil((8 * pkt_len - 4 * _rf_settings.lora.datarate + 28
+                            + 16 * _rf_settings.lora.crc_on -
+                            (_rf_settings.lora.fix_len ? 20 : 0))
+                            / (float) (4 * (_rf_settings.lora.datarate -
+                                       ((_rf_settings.lora.low_datarate_optimize
+                                                    > 0) ? 2 : 0)))) *
+                                                    (_rf_settings.lora.coderate + 4);
+            float n_payload = 8 + ((tmp > 0) ? tmp : 0);
+            float t_payload = n_payload * ts;
+            // Time on air
+            float t_onair = preamble_time + t_payload;
+            // return ms secs
+            airtime = floor(t_onair * 1000 + 0.999f);
+        }
+            break;
+    }
+    return airtime;
+}
+
 
 /**
  * Prepares and sends the radio packet out in the air
@@ -1834,6 +1904,15 @@ void SX1272_LoRaRadio::handle_dio0_irq()
 
                     if ((_radio_events != NULL)
                             && (_radio_events->rx_done)) {
+                        // Start timing the duration since the packet was received
+                        if(primary_active == false) {
+                            primary_active = true;
+                            primary_rx_tmr.start();
+                        }
+                        else if(secondary_active == false) {
+                            secondary_active = true;
+                            secondary_rx_tmr.start();
+                        }
                         _radio_events->rx_done(
                                 _data_buffer,
                                 _rf_settings.lora_packet_handler.size,

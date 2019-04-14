@@ -32,6 +32,7 @@ SPDX-License-Identifier: BSD-3-Clause
 #include "DigitalInOut.h"
 #include "SPI.h"
 #include "platform/PlatformMutex.h"
+#include "mbed.h"
 #ifdef MBED_CONF_RTOS_PRESENT
  #include "rtos/Thread.h"
 #endif
@@ -270,6 +271,20 @@ public:
      */
     virtual uint32_t time_on_air(radio_modems_t modem, uint8_t pkt_len);
 
+     /**
+     *  Computes the packet time on air for the given payload
+     *
+     *  Remark can only be called once SetRxConfig or SetTxConfig have been called
+     *
+     *  @param modem                Radio modem to be used [0: FSK, 1: LoRa]
+     *  @param pkt_len              Packet payload length
+     *  @param symbol_duration      Reference to float that will hold the computed symbol duration
+     *  @param preamble_duration    Reference to float that will hold the computed preamble duration
+     *  @return                     Computed airTime for the given packet payload length
+     */
+    virtual uint32_t time_on_air_comprehensive(radio_modems_t modem, uint8_t pkt_len, 
+                            float &symbol_duration, float &preamble_duration);
+
     /**
      * Perform carrier sensing
      *
@@ -320,6 +335,12 @@ public:
      * Release exclusive access
      */
     virtual void unlock(void);
+
+    /**
+     * Timers for tracking when the Rx interrupt was thrown
+     */
+    Timer primary_rx_tmr, secondary_rx_tmr;
+    bool primary_active, secondary_active;
 
 private:
 
